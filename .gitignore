@@ -12,3 +12,6 @@ wheels/
 # secrets
 .env
 .env.local
+
+# personal learning trail (local only)
+LEARNING_PATH.md
