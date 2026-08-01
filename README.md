@@ -2,78 +2,135 @@
 
 **Find the smallest, complete baton for agent handoffs — measured, not guessed.**
 
-![status](https://img.shields.io/badge/status-early%20WIP-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![python](https://img.shields.io/badge/python-3.12%2B-green)
+![status](https://img.shields.io/badge/status-early%20WIP-orange) ![license](https://img.shields.io/badge/license-MIT-blue) ![python](https://img.shields.io/badge/python-3.13%2B-green)
 
-> ⚠️ **Early / work-in-progress, built in the open.** The API below is the target design; not all of it
-> is implemented yet. Follow the roadmap.
+> Built in the open. The API below is the target design — see [Status](#status) for what runs today.
 
 ---
 
-## What is this?
+## The problem
 
-When one agent hands off to another (planner → executor, triage → specialist, a `fork`/subagent in
-Claude Code, a LangGraph `Command`), it passes a **baton** — the context the next agent needs to continue.
+Whenever one agent hands work to another, something has to cross the seam between them:
 
-Every framework gives you a **pipe** to pass that baton. **None tell you what to put in it, or whether
-it worked.** So people either dump the entire conversation (expensive, noisy, truncates) or hand-write a
-summary by gut feel (lossy). Handoffs become guesswork, and failures are silent — you can't tell if the
-receiving agent failed because of a weak model or a bad baton.
+- a **planner** hands a plan to an **executor**
+- a **triage** agent routes to a **specialist**
+- an **orchestrator** spawns a **subagent** and expects a result back
+- a chain runs **A → B → C**, each hop compressing what the last one produced
+- two agents from **different frameworks or vendors** exchange state over a protocol
 
-**agent-relay** is a diagnostic + optimization toolkit for that seam:
+Whatever crosses that seam is the **baton**.
 
-- **Pluggable baton strategies** — `full_dump`, `summary`, `structured`, `minimal`.
-- **Handoff eval harness** — score pickup success, token cost, and latency per strategy. Measured, not vibes.
-- **Context-cliff detector** — mechanically find *which* baton fields are load-bearing by ablating each
-  one and measuring the drop in success. Gives you a **minimal, complete** baton.
+Every framework gives you a pipe to carry it — a LangGraph `Command`, a state dict, a spawn prompt, an
+A2A message. **None tell you what to put in it, or whether it worked.**
 
-It's **framework-agnostic** (LangGraph first) and runs on **open-weight models** (via Groq / any
-OpenAI-compatible endpoint). Complementary to Claude Code, LangGraph, CrewAI — it tells you what your
-handoff is missing, and proves it.
+So teams do one of two things. Dump the whole transcript: expensive, noisy, and it truncates on long
+runs. Or hand-write a summary by gut feel: lossy, and nobody knows which parts were load-bearing.
+Either way the failures are silent — when the receiving agent does the wrong thing, you cannot tell
+whether the model was weak or the baton was missing a field.
 
-## Why it matters
+Multi-hop makes it worse. Each handoff compresses again, so a field dropped at the first seam is
+unrecoverable at the third, and the failure surfaces far from where it was caused.
 
-Multi-agent orchestration research keeps finding the same thing: **most agent failures are
-context-transfer failures at handoff points, not model failures.** agent-relay makes that seam
-measurable and tunable instead of guessed.
+The reframe agent-relay is built on:
 
-## Target API (roadmap)
+> **A handoff is lossy compression with a measurable downstream signal.**
+> The receiving agent's task success is the loss function.
 
-```python
-from agent_relay import Baton, HandoffEval, CliffDetector
+That turns baton design from a matter of taste into an empirical question.
 
-# 1. pluggable baton strategies
-baton = Baton.structured(from_agent=planner)      # or .full_dump(), .summary(), .minimal()
+## What it does
 
-# 2. measure the handoff across strategies
-report = HandoffEval(task_suite).compare(
-    planner, executor, strategies=["full_dump", "structured"],
-)
-#   → success %, baton tokens, latency per strategy
+**Pluggable baton strategies.** `full_dump`, `summary`, `structured`, `minimal` — swap the compression
+and hold everything else fixed.
 
-# 3. the unique bit — what does the handoff actually NEED?
-cliff = CliffDetector(executor).rank(baton, task_suite)
-#   → {passport: CRITICAL (Δ-0.6), budget: CRITICAL, decisions: cut-it (Δ0.0)}
+**A handoff eval harness.** Pickup success and token cost per strategy, over K repeats. A Pareto view
+of success versus size, so "cheaper" and "good enough" stay separate axes you can actually see.
+
+**A context-cliff detector.** The headline. Ablate one baton field at a time, replay the receiver, and
+rank fields by the drop in success. Large Δ means load-bearing. Δ0.0 means dead weight you can cut.
+The output is a **minimal, complete** baton for your task — derived, not guessed.
+
+```
+goal            CRITICAL   Δ -0.80
+budget          CRITICAL   Δ -0.60
+open_steps      minor      Δ -0.05
+decisions_log   cut it     Δ  0.00
 ```
 
-## Tech stack
+## Method
 
-LangGraph (handoff via `Command`) · open-weight models on Groq (`langchain-groq`) · Pydantic (typed
-batons) · Redis (baton channel, cache, rate limiter, queue) · DeepEval (pickup-success scoring) ·
-Langfuse (tracing) · SQLite/DuckDB (results). All free / self-hostable.
+For each field in the baton:
 
-## Status & roadmap
+1. Freeze one extracted baton. Every trial runs against byte-identical text.
+2. Remove the field — excluded from the payload entirely, not set to `null`.
+3. **Verify the removal was real** (see below). If it wasn't, the field is reported as *untestable*.
+4. Replay the receiver K times against the ablated baton. Only the receiver re-runs; the sending
+   agent never runs again.
+5. Δ = baseline success − ablated success.
 
-| Stage | State |
-|-------|-------|
-| One agent + one tool (base loop) | 🔨 building |
-| Traditional handoff (A→B, full-dump) | ⬜ |
-| Structured baton (Pydantic) | ⬜ |
-| Eval harness (pickup success) | ⬜ |
-| Strategy comparison (Pareto: success vs tokens) | ⬜ |
-| Redis handoff channel + cache + rate limiter | ⬜ |
-| Context-cliff detector | ⬜ |
+## Why the numbers can be trusted
 
-## Install (from source — not yet on PyPI)
+A tool that recommends cuts is only as good as its ability to tell a safe cut from one that merely
+looked safe. Most of the design effort here goes into making a Δ mean something.
+
+**Leak detection.** If `budget` is deleted from the payload but the goal line still reads "book a
+flight under $500", the receiver succeeds and the field scores Δ0.0 — indistinguishable from a field
+that genuinely doesn't matter. Same number, opposite conclusions. Before trusting any Δ, agent-relay
+checks whether the removed fact survived elsewhere in the payload: by value, and by domain vocabulary
+for facts that leak as wording rather than as a value. A leaking field is reported as **untestable**,
+never as zero.
+
+**Control fields.** Declare fields you *know* are noise. They must rank Δ0.0. If they don't, the
+instrument is broken and the run says so — instead of you having to remember to sanity-check it.
+
+**A frozen baton.** Extraction is nondeterministic even at temperature 0. If the baton text drifts
+between the baseline run and the ablated run, the Δ is measuring drift, not importance. One stored
+baton per sweep.
+
+**Tokens, not latency.** Token counts are exact and reproducible. Wall-clock on a shared inference
+endpoint measures queue position — we have measured 0.5s and 151s for the same call minutes apart.
+
+**Receiver isolation.** The receiving agent's system prompt carries tool hygiene only, never task
+content. A prompt that says "satisfy all constraints" makes the receiver honour constraints the baton
+never supplied, silently deflating every constraint field in the ranking.
+
+## Target API
+
+```python
+from agent_relay import BatonBase, ControlField, CliffDetector, HandoffEval
+
+class Baton(BatonBase):                      # your schema, your domain
+    goal: str
+    budget_usd: int | None = None
+    user_mood: str = ControlField()          # declared noise; must rank Δ0.0
+
+report = HandoffEval(tasks).compare(
+    sender, receiver, strategies=["full_dump", "structured"],
+)                                            # success %, baton tokens, per strategy
+
+cliff = CliffDetector(receiver, success=lambda r: r.booked == "AI101").rank(baton, k=5)
+#   → {budget_usd: CRITICAL (Δ-0.6), user_mood: cut-it (Δ0.0), goal: UNTESTABLE (leaks)}
+```
+
+The success function is **always yours**. It is the loss function, and no framework can infer it.
+
+## Status
+
+Working end to end on one synthetic A→B task — a planner handing a booking to an executor: typed baton
+extraction from the sender's transcript, ablation by field exclusion, and the two-layer leak guard with
+self-correcting re-extraction.
+
+In progress: the K-repeat measurement loop, then the cliff sweep itself.
+
+Not built yet: the public `agent_relay` package, additional baton strategies, Redis as the handoff
+channel, a judge-based scorer for tasks with no mechanical success check, and multi-hop (A→B→C) sweeps.
+
+Current code lives in `sandbox/` as a deliberately concrete implementation. Extracting a package is
+gated on two things: the cliff detector producing a real ranking, and a second, structurally different
+task. One domain cannot validate a framework claim — it can only produce an abstraction shaped like
+that domain.
+
+## Install
 
 ```bash
 git clone https://github.com/shrirang3/agent-relay
@@ -82,9 +139,13 @@ uv sync
 cp .env.example .env   # add your GROQ_API_KEY
 ```
 
+Runs on open-weight models via Groq, or any OpenAI-compatible endpoint. Framework-agnostic by design;
+LangGraph is the first integration.
+
 ## Contributing
 
-Early days — issues and ideas welcome. See `docs/` for the problem statement and architecture.
+Early days — issues and ideas welcome, particularly from anyone who has debugged a bad handoff and had
+no way to prove what was missing. See `docs/` for the problem statement and architecture.
 
 ## License
 
