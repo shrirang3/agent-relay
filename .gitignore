@@ -16,3 +16,6 @@ wheels/
 # personal learning trail (local only)
 LEARNING_PATH.md
 scratch/
+
+# cached A transcript (local iteration only)
+sandbox/.transcript.json

@@ -19,6 +19,11 @@ CORRECT_FLIGHT_ID = "AI101"
 
 BOOKED = []  # ground-truth probe: B's tool call mutates this
 
+def make_model(**kw):
+    """One place to build the model. timeout so a stalled call fails instead of
+    blocking a sweep; retries left low because backoff hides real latency."""
+    from langchain_groq import ChatGroq
+    return ChatGroq(model=MODEL, temperature=0, timeout=90, max_retries=2, **kw)
 
 @tool
 def list_flights() -> list:
