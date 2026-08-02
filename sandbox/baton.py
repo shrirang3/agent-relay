@@ -8,6 +8,25 @@ from agents import make_planner
 
 from fixtures import make_model, user_convo
 
+BATON_CACHE = pathlib.Path(__file__).parent / ".baton.json"
+
+
+def get_baton(model, transcript, probes=None, cache: pathlib.Path = BATON_CACHE):
+    """One frozen baton, reused by every trial in a sweep.
+
+    Extraction is nondeterministic even at temperature 0. Re-extracting per trial would
+    mean the baseline and the ablated runs saw different text, so the delta would measure
+    A's drift instead of the field's importance. Delete the file to re-extract.
+
+    Leaks are recomputed on load rather than cached — it's pure string work, and a stale
+    "clean" verdict is exactly the kind of thing that quietly invalidates a sweep.
+    """
+    if cache.exists():
+        b = Baton.model_validate_json(cache.read_text())
+        return b, 0, all_leaks(b, probes)
+    b, attempts, leaks = extract_clean_baton(model, transcript, probes)
+    cache.write_text(b.model_dump_json())
+    return b, attempts, leaks
 
 class Baton(BaseModel):
     """The note passed A → B. Fixed schema — only which fields are PRESENT varies."""

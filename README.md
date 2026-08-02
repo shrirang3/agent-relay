@@ -114,13 +114,38 @@ cliff = CliffDetector(receiver, success=lambda r: r.booked == "AI101").rank(bato
 
 The success function is **always yours**. It is the loss function, and no framework can infer it.
 
+## Early results
+
+First measured run. Synthetic planner→executor booking task, one frozen baton,
+`llama-3.3-70b-versatile` at temperature 0, K=2 repeats per strategy:
+
+| strategy | pickup success | baton tokens |
+|---|---|---|
+| `full_dump` | 2/2 | 758 |
+| `structured` | 2/2 | **354** |
+
+Same success for **2.1× less context**. Baton tokens are the receiver's real first-call input as
+reported by the provider, not an estimate.
+
+Read with the caveats, which matter more than the number:
+
+- **K=2 is too small to separate success rates.** Both arms passed every trial, so this task currently
+  discriminates on cost, not correctness.
+- **Trials were byte-identical, token for token.** At temperature 0 on a task this easy the receiver is
+  effectively deterministic, so repeats aren't yet buying variance information.
+- **One task, one model.** This demonstrates the harness works end to end. It is not a benchmark, and
+  no general claim about baton strategies follows from it.
+
 ## Status
 
 Working end to end on one synthetic A→B task — a planner handing a booking to an executor: typed baton
-extraction from the sender's transcript, ablation by field exclusion, and the two-layer leak guard with
-self-correcting re-extraction.
+extraction from the sender's transcript, ablation by field exclusion, the two-layer leak guard with
+self-correcting re-extraction, and the K-repeat measurement loop that produced the numbers above.
 
-In progress: the K-repeat measurement loop, then the cliff sweep itself.
+In progress: the cliff sweep itself. Before it can produce a trustworthy ranking, the task fixture has
+to make each constraint independently decisive — if one constraint alone already selects the right
+answer, every other constraint scores Δ0.0 while genuinely mattering. That's a property of the task,
+invisible to the leak guard, and it has to be designed out rather than detected.
 
 Not built yet: the public `agent_relay` package, additional baton strategies, Redis as the handoff
 channel, a judge-based scorer for tasks with no mechanical success check, and multi-hop (A→B→C) sweeps.
