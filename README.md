@@ -83,6 +83,16 @@ never as zero.
 **Control fields.** Declare fields you *know* are noise. They must rank Δ0.0. If they don't, the
 instrument is broken and the run says so — instead of you having to remember to sanity-check it.
 
+This has already paid for itself. An early sweep reported the planted `small_talk` field as CRITICAL at
+Δ−1.00, because trials killed by a provider rate limit were being counted as failed handoffs. A failed
+HTTP call is **missing data, not a failed pickup**. Errored conditions are now reported `INVALID` with no
+Δ at all, and a damaged baseline aborts the run rather than propagating into every row. Without a control
+group, that false CRITICAL would have looked like a discovery.
+
+**Missing data is never zero.** Empty field, leaking field, errored call — each is reported as
+`UNTESTABLE` or `INVALID`. A harness that emits 0.0 for these is telling you to delete something it
+never actually tested.
+
 **A frozen baton.** Extraction is nondeterministic even at temperature 0. If the baton text drifts
 between the baseline run and the ablated run, the Δ is measuring drift, not importance. One stored
 baton per sweep.
@@ -116,8 +126,40 @@ The success function is **always yours**. It is the loss function, and no framew
 
 ## Early results
 
-First measured run. Synthetic planner→executor booking task, one frozen baton,
-`llama-3.3-70b-versatile` at temperature 0, K=2 repeats per strategy:
+All numbers below: synthetic planner→executor booking task, one frozen baton,
+`llama-3.3-70b-versatile` at temperature 0.
+
+### First cliff report
+
+Seven baton fields, K=10 replays each, baseline 10/10:
+
+| field | Δ | verdict | what the receiver did instead |
+|---|---|---|---|
+| `avoid_red_eye` | **−1.00** | CRITICAL | booked the $380 red-eye flight, 10/10 |
+| `goal` | 0.00 | cut it | booked correctly with no goal at all |
+| `budget_usd` | 0.00 | cut it | booked correctly with no budget |
+| `superseded` | 0.00 | cut it | — |
+| `open_steps` | — | UNTESTABLE | field came back empty; nothing to remove |
+| `user_mood` *(control)* | — | pending | rate-limited; not yet measured |
+| `small_talk` *(control)* | — | pending | rate-limited; not yet measured |
+
+**The report is not yet validated.** The two control fields were lost to rate limiting, and until they
+measure Δ0.00 the ranking above is provisional by this project's own standard.
+
+Two of those zeros are findings about the **task**, not about batons — and worth stating because they're
+the failure mode a naive ablation harness would report as fact:
+
+- **`goal` is recoverable from the tool list.** The receiver holds a tool named `book_flight`. Remove
+  the goal and it still books. Tool names are context you can't hide, so on this task the goal is
+  genuinely redundant.
+- **`budget_usd` is structurally redundant.** Once red-eye is excluded, the $420 flight is already the
+  cheapest remaining option, so the $500 limit is never consulted. A constraint can only be measured if
+  it is **independently decisive** — a property of the task fixture, invisible to the leak guard, and
+  something that has to be designed out rather than detected.
+
+### Strategy comparison
+
+K=2 repeats per strategy:
 
 | strategy | pickup success | baton tokens |
 |---|---|---|
@@ -131,8 +173,10 @@ Read with the caveats, which matter more than the number:
 
 - **K=2 is too small to separate success rates.** Both arms passed every trial, so this task currently
   discriminates on cost, not correctness.
-- **Trials were byte-identical, token for token.** At temperature 0 on a task this easy the receiver is
-  effectively deterministic, so repeats aren't yet buying variance information.
+- **Repeats in a tight loop are not independent samples.** At K=10 every condition came out identical
+  token-for-token — yet the same condition disagreed between a K=3 run and a K=10 run made hours apart.
+  Back-to-back replays hit the same backend state, so K inside a loop measures within-session
+  determinism, not true variance. Real variance needs repeats spread over time.
 - **One task, one model.** This demonstrates the harness works end to end. It is not a benchmark, and
   no general claim about baton strategies follows from it.
 
@@ -140,12 +184,12 @@ Read with the caveats, which matter more than the number:
 
 Working end to end on one synthetic A→B task — a planner handing a booking to an executor: typed baton
 extraction from the sender's transcript, ablation by field exclusion, the two-layer leak guard with
-self-correcting re-extraction, and the K-repeat measurement loop that produced the numbers above.
+self-correcting re-extraction, the K-repeat measurement loop, and the cliff sweep that produced the
+report above. Sweeps are resumable per condition, so a rate limit costs one row rather than the run.
 
-In progress: the cliff sweep itself. Before it can produce a trustworthy ranking, the task fixture has
-to make each constraint independently decisive — if one constraint alone already selects the right
-answer, every other constraint scores Δ0.0 while genuinely mattering. That's a property of the task,
-invisible to the leak guard, and it has to be designed out rather than detected.
+Immediately next: measure the two rate-limited control fields to validate the report, then redesign the
+task fixture so each constraint is independently decisive — right now one constraint alone selects the
+right answer, which makes the others unmeasurable however important they are.
 
 Not built yet: the public `agent_relay` package, additional baton strategies, Redis as the handoff
 channel, a judge-based scorer for tasks with no mechanical success check, and multi-hop (A→B→C) sweeps.
