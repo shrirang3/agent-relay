@@ -20,3 +20,4 @@ scratch/
 # cached A transcript (local iteration only)
 sandbox/.transcript.json
 sandbox/.baton.json
+sandbox/.cliff.json

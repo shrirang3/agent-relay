@@ -20,6 +20,12 @@ from fixtures import BOOKED, CORRECT_FLIGHT_ID, make_model, user_convo
 
 K = 2
 
+# Groq free tier allows ~30 req/min and B makes 2 calls per pickup, so ~15 pickups/min
+# is the ceiling. An unthrottled sweep ran at 23 calls/min and died on 429s two thirds
+# of the way through, losing 341s of work. Stay under the limit deliberately rather
+# than by luck.
+THROTTLE = 4.0
+
 # Identical for both strategies, and deliberately free of task content. A trigger like
 # "book the flight under $500" would hand B the task outside the baton — the same
 # competing-channel problem as the receiver's system prompt.
@@ -66,6 +72,8 @@ def trials(executor, messages, k: int = K) -> dict:
     """Run the same handoff k times. Same input every time — the variance is B's."""
     runs = []
     for i in range(k):
+        if i:
+            time.sleep(THROTTLE)
         r = run_trial(executor, messages)
         runs.append(r)
         print(
@@ -77,6 +85,7 @@ def trials(executor, messages, k: int = K) -> dict:
     return {
         "passes": sum(r["ok"] for r in runs),
         "k": k,
+        "scored": len(scored),  # trials that produced data; k - scored == missing data
         "errors": sum(r["errored"] for r in runs),
         "first_tokens": mean([r["first"] for r in scored]),
         "total_tokens": mean([r["total"] for r in scored]),
