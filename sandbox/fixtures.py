@@ -21,9 +21,18 @@ BOOKED = []  # ground-truth probe: B's tool call mutates this
 
 def make_model(**kw):
     """One place to build the model. timeout so a stalled call fails instead of
-    blocking a sweep; retries left low because backoff hides real latency."""
+    blocking a sweep; retries low by default because backoff hides real latency.
+
+    setdefault, not literals — passing any of these explicitly (cliff.py raises
+    max_retries for sweeps) would otherwise collide with the hardcoded value.
+    """
     from langchain_groq import ChatGroq
-    return ChatGroq(model=MODEL, temperature=0, timeout=90, max_retries=2, **kw)
+
+    kw.setdefault("model", MODEL)
+    kw.setdefault("temperature", 0)
+    kw.setdefault("timeout", 90)
+    kw.setdefault("max_retries", 2)
+    return ChatGroq(**kw)
 
 @tool
 def list_flights() -> list:
