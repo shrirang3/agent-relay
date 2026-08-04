@@ -24,7 +24,7 @@ from baton import FIELDS, LEAK_PROBES, find_leaks, get_baton, get_transcript
 from fixtures import CORRECT_FLIGHT_ID, make_model, user_convo
 from measure import TRIGGER, trials
 
-K = 10
+K = 3
 
 # Per-condition results, so a 429 two thirds of the way through costs one condition
 # instead of the whole sweep. Keyed by (baton text, K) — reusing rows measured against
@@ -104,6 +104,20 @@ if __name__ == "__main__":
         # seven rows. Refuse to build a report on a damaged baseline.
         if base["errors"]:
             raise SystemExit(f"baseline had {base['errors']}/{K} errored calls — fix rate limits first")
+        # A 0/K baseline has no success to lose, so every delta can only come out >= 0 —
+        # the sweep is mathematically incapable of finding a cliff. It produced a table
+        # anyway once, with "removing the budget helps, +1.00". Refuse instead.
+        if base["passes"] == 0:
+            raise SystemExit(
+                f"baseline is 0/{K} — B fails with the COMPLETE baton, so no field can show a "
+                f"drop. Fix the receiver or the task first. B booked: {base['booked']}"
+            )
+        if base["passes"] < K:
+            raise SystemExit(
+                f"baseline is {base['passes']}/{K} — B is at its decision boundary, so ablations "
+                f"measure prompt perturbation rather than information. Make the task less "
+                f"tempting before sweeping. B booked: {base['booked']}"
+            )
         store["baseline"] = base
         save_results(store)
         print()

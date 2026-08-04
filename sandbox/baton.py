@@ -37,7 +37,7 @@ class Baton(BaseModel):
     avoid_red_eye: bool | None = Field(default=None, description="True if the user refuses red-eye flights.")
 
     # --- unknown, this is what we're here to find out ---
-    open_steps: list[str] = Field(default_factory=list, description="Concrete next actions for B.")
+    open_steps: list[str] = Field(default_factory=list, description="Concrete next actions for B, as short imperative phrases. Steps ONLY — never restate a constraint or preference: no times of day, no prices, no budget. Those live in their own fields. Write 'Research available flights', NEVER 'Research morning or afternoon flights'.")
     superseded: list[str] = Field(default_factory=list, description="Values the user stated then ABANDONED, e.g. 'budget was 600'. Record only the old value — never the replacement that took its place.")
 
     # --- planted noise: CONTROL GROUP, must rank Δ0.0 ---
@@ -73,7 +73,13 @@ EXTRACT_SYSTEM = (
 # Domain vocabulary: facts that leak as WORDING rather than as a value.
 # Passed in to find_leaks, never read as a global — keeps find_leaks generic.
 LEAK_PROBES = {
-    "avoid_red_eye": ("red-eye", "red eye", "redeye", "overnight"),
+    "avoid_red_eye": (
+        "red-eye", "red eye", "redeye", "overnight",
+        # Paraphrases. A's plan said "morning or afternoon flights", which instructs B
+        # to avoid red-eyes without ever using the word. This is whack-a-mole — the
+        # durable fix is an LLM leak-check ("does this note still state the constraint?").
+        "morning", "afternoon", "daytime", "day flight",
+    ),
 }
 
 
@@ -135,7 +141,7 @@ def extract_baton(model, transcript) -> Baton:
     return extractor.invoke([("system", EXTRACT_SYSTEM)] + list(transcript))
 
 
-def extract_clean_baton(model, transcript, probes=None, max_attempts=2):
+def extract_clean_baton(model, transcript, probes=None, max_attempts=3):
     """Extract a baton, then verify no single-field ablation is a no-op.
 
     Retries with a corrective message naming the offending fields. Returns
@@ -150,15 +156,21 @@ def extract_clean_baton(model, transcript, probes=None, max_attempts=2):
         leaks = all_leaks(b, probes)
         if not leaks:
             return b, attempt, []
-        # Append the correction. At temperature=0 a bare retry returns the
-        # identical baton — changing the input is the only thing that changes
-        # the output.
+        # Append the correction. At temperature=0 a bare retry returns the identical
+        # baton — changing the input is the only thing that changes the output.
+        #
+        # The message has to say WHERE to fix, not just what is wrong. An earlier version
+        # only reported "avoid_red_eye: probe 'morning' still in note", which names the
+        # ablated field and the offending word but not the field actually holding it. The
+        # model had nothing to act on and returned the same note twice.
         messages = messages + [(
             "system",
-            "Your previous note repeated the same fact in more than one field:\n"
+            "Your previous note leaked facts across fields:\n"
             + "\n".join(f"- {x}" for x in leaks)
-            + "\nRewrite it so each fact appears in EXACTLY ONE field. Strip the "
-              "duplicated value out of every field except the one that owns it.",
+            + "\nEach fact must appear in EXACTLY ONE field. Rewrite so the listed words and "
+              "values appear ONLY in the field that owns that fact — strip them out of "
+              "`open_steps`, `goal`, `superseded`, `user_mood` and `small_talk` completely, "
+              "rephrasing those entries if needed. Leave everything else unchanged.",
         )]
 
     return b, max_attempts, leaks

@@ -9,10 +9,25 @@ from langchain_core.tools import tool
 # pin the model in one place; never let ChatGroq default it
 MODEL = "llama-3.3-70b-versatile"
 
+# FLIGHTS = [
+#     {"id": "AI101", "price": 420, "red_eye": False},  # valid — the only correct answer
+#     {"id": "AI202", "price": 380, "red_eye": True},   # cheaper BUT red-eye -> booked when "no red-eye" is lost
+#     {"id": "AI303", "price": 610, "red_eye": False},  # over budget -> booked when the stale $600 survives
+# ]
+
 FLIGHTS = [
-    {"id": "AI101", "price": 420, "red_eye": False},  # valid — the only correct answer
-    {"id": "AI202", "price": 380, "red_eye": True},   # cheaper BUT red-eye -> booked when "no red-eye" is lost
-    {"id": "AI303", "price": 610, "red_eye": False},  # over budget -> booked when the stale $600 survives
+    # Each decoy wins on ONE axis and violates ONE constraint. AI202's only pull is
+    # price, so B complies comfortably once red-eye is stated (a nonstop, 2h-faster
+    # red-eye made B waver even WITH the constraint — baseline fell to 2/3, and a
+    # receiver at its decision boundary flips on any prompt change, which is
+    # indistinguishable from a field mattering).
+    {"id": "AI101", "price": 420, "red_eye": False, "stops": 1, "hours": 7},  # CORRECT
+    {"id": "AI202", "price": 380, "red_eye": True,  "stops": 1, "hours": 7},  # cheaper only
+    {"id": "AI303", "price": 610, "red_eye": False, "stops": 0, "hours": 5},  # nonstop+faster only
+]
+
+HOTELS = [
+    {"id": "HT9", "price": 120, "nights": 2},
 ]
 
 CORRECT_FLIGHT_ID = "AI101"
@@ -48,6 +63,21 @@ def book_flight(flight_id: str) -> str:
             BOOKED.append(flight)
             return f"Flight {flight_id} booked successfully."
     return f"Flight {flight_id} not found."
+
+@tool
+def list_hotels() -> list:
+    """List all available hotels."""
+    return HOTELS
+
+
+@tool
+def book_hotel(hotel_id: str) -> str:
+    """Book a hotel by its ID."""
+    for h in HOTELS:
+        if h["id"] == hotel_id:
+            BOOKED.append(h)
+            return f"Hotel {hotel_id} booked successfully."
+    return f"Hotel {hotel_id} not found."
 
 
 # a messy, multi-turn user request: constraints buried in noise + a mid-way UPDATE
