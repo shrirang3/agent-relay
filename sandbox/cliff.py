@@ -146,8 +146,12 @@ if __name__ == "__main__":
         else:
             print(f"--- drop {f} ---")
             r = keep(trials(executor, note_messages(baton, frozenset({f})), K))
-            store["fields"][f] = r
-            save_results(store)  # persist per condition, not at the end
+            # Only cache clean conditions. Persisting an errored one meant a single 429
+            # poisoned that row permanently — it replayed as cached INVALID on every
+            # later run until the cache file was deleted by hand.
+            if not r["errors"]:
+                store["fields"][f] = r
+                save_results(store)  # persist per condition, not at the end
             print()
 
         # A failed HTTP call is MISSING DATA, not a failed pickup. Scoring a 429 as a

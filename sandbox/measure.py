@@ -20,11 +20,13 @@ from fixtures import BOOKED, CORRECT_FLIGHT_ID, make_model, user_convo
 
 K = 2
 
-# Groq free tier allows ~30 req/min and B makes 2 calls per pickup, so ~15 pickups/min
-# is the ceiling. An unthrottled sweep ran at 23 calls/min and died on 429s two thirds
-# of the way through, losing 341s of work. Stay under the limit deliberately rather
-# than by luck.
-THROTTLE = 4.0
+# Groq free tier allows ~30 req/min. A pickup costs ~3 model calls (decide to list,
+# decide to book, final answer), so 4s between trials still ran ~67 calls/min and hit
+# 429s mid-sweep. 8s keeps a 3-trial condition under the ceiling.
+# The limit is per-minute and resets in about a minute — a 429 means slow down, not
+# switch models. (openai/gpt-oss-120b was tried as a second bucket and is unusable
+# here: it answers in prose without calling any tool.)
+THROTTLE = 8.0
 
 # Identical for both strategies, and deliberately free of task content. A trigger like
 # "book the flight under $500" would hand B the task outside the baton — the same
