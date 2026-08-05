@@ -1,0 +1,12 @@
+services:
+  redis:
+    image: redis:8-alpine
+    container_name: agent-relay-redis
+    ports:
+      - "6379:6379"
+    # appendonly makes writes survive a restart. Role 2 is baton ARCHIVE and replay —
+    # a stream that vanishes when the container restarts cannot be an archive.
+    command: redis-server --appendonly yes
+    volumes:
+      - ./.redis-data:/data
+    restart: unless-stopped

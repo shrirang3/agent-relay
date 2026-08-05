@@ -21,3 +21,6 @@ scratch/
 sandbox/.transcript.json
 sandbox/.baton.json
 sandbox/.cliff.json
+
+# redis appendonly data (local)
+.redis-data/
