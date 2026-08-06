@@ -32,13 +32,13 @@ class Baton(BaseModel):
     """The note passed A → B. Fixed schema — only which fields are PRESENT varies."""
 
     # --- expected load-bearing ---
-    goal: str = Field(description="The single action B must perform, one line, starting with an imperative verb B can execute. Not a planning step. The ACTION ONLY — no constraints, no prices, no numbers, no budget. Write 'Book a flight', NEVER 'Book a flight under $500'.")
-    budget_usd: int | None = Field(default=None, description="Hard maximum in USD. The LATEST value if the user changed it.")
-    avoid_red_eye: bool | None = Field(default=None, description="True if the user refuses red-eye flights.")
+    goal: str = Field(description="The single action B must perform, one line, starting with an imperative verb B can execute. Not a planning step. The ACTION ONLY — no constraints, no numbers, no requirements. Write 'Book a flight', NEVER 'Book a refundable flight from Terminal 2'.")
+    required_terminal: int | None = Field(default=None, description="The terminal number the user must depart from. The LATEST value if they changed their mind.")
+    needs_refundable: bool | None = Field(default=None, description="True if the user needs a ticket they can get their money back on.")
 
     # --- unknown, this is what we're here to find out ---
-    open_steps: list[str] = Field(default_factory=list, description="Concrete next actions for B, as short imperative phrases. Steps ONLY — never restate a constraint or preference: no times of day, no prices, no budget. Those live in their own fields. Write 'Research available flights', NEVER 'Research morning or afternoon flights'.")
-    superseded: list[str] = Field(default_factory=list, description="Values the user stated then ABANDONED, e.g. 'budget was 600'. Record only the old value — never the replacement that took its place.")
+    open_steps: list[str] = Field(default_factory=list, description="Concrete next actions for B, as short imperative phrases. Steps ONLY — never restate a requirement: no terminal numbers, no refund or cancellation policy, no prices. Those live in their own fields. Write 'Research available options', NEVER 'Research refundable flights from Terminal 2'.")
+    superseded: list[str] = Field(default_factory=list, description="Values the user stated then ABANDONED, e.g. 'terminal was 1'. Record only the old value — never the replacement that took its place.")
 
     # --- planted noise: CONTROL GROUP, must rank Δ0.0 ---
     user_mood: str = Field(default="", description="The user's emotional tone in one or two words. No task details, no constraints.")
@@ -61,7 +61,7 @@ EXTRACT_SYSTEM = (
     "`open_steps` comes from the working agent's PLAN, not from the user: the concrete actions "
     "it decided on but did not carry out. If it planned nothing actionable, leave it empty.\n"
     "If the user changed their mind, put the LATEST value in the field and record the "
-    "abandoned one in `superseded` as a short phrase (e.g. 'budget was 600').\n"
+    "abandoned one in `superseded` as a short phrase (e.g. 'terminal was 1').\n"
     "Fill EVERY field the transcript supports, including `user_mood` and `small_talk` — "
     "capture off-topic chatter near-verbatim instead of discarding it.\n"
     "Never invent. If the transcript never stated something, leave that field at its default.\n"
@@ -73,13 +73,15 @@ EXTRACT_SYSTEM = (
 # Domain vocabulary: facts that leak as WORDING rather than as a value.
 # Passed in to find_leaks, never read as a global — keeps find_leaks generic.
 LEAK_PROBES = {
-    "avoid_red_eye": (
-        "red-eye", "red eye", "redeye", "overnight",
-        # Paraphrases. A's plan said "morning or afternoon flights", which instructs B
-        # to avoid red-eyes without ever using the word. This is whack-a-mole — the
-        # durable fix is an LLM leak-check ("does this note still state the constraint?").
-        "morning", "afternoon", "daytime", "day flight",
-    ),
+    # Probe the FACT, not the word. A bare "terminal" probe would flag `superseded`,
+    # which legitimately records the abandoned Terminal 1 — an old value that misleads
+    # B rather than leaking the requirement.
+    "required_terminal": ("terminal 2", "terminal two"),
+    # needs_refundable is a bool, so layer 1 cannot search its value ("true" matches
+    # every other bool). Paraphrase is the whole risk: A's plan can express the
+    # requirement without ever using the word "refundable". This is whack-a-mole — the
+    # durable fix is an LLM leak-check ("does this note still state the constraint?").
+    "needs_refundable": ("refund", "money back", "cancel", "flexible ticket"),
 }
 
 
@@ -209,7 +211,7 @@ if __name__ == "__main__":
     print(f"[extract] {time.perf_counter() - t:.1f}s  attempts={attempts}  unresolved={leaks or 'none'}\n")
 
     print(b.to_prompt())
-    print(b.to_prompt(drop=frozenset({"budget_usd"})))  # prove the key vanishes
+    print(b.to_prompt(drop=frozenset({"required_terminal"})))  # prove the key vanishes
 
     print("\n=== leak self-test: drop one field at a time ===")
     for f in FIELDS:

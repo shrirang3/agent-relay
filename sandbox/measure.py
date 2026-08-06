@@ -5,8 +5,9 @@ One LLM run is a coin tossed once; you cannot tell "structured is better" from
 input tokens, and WHICH flight the failures booked.
 
 The failure id is the diagnosis:
-    AI202 ($380, red-eye)   -> the red-eye constraint was lost
-    AI303 ($610, no red-eye)-> the stale $600 budget survived the handoff
+    AI202 ($380, Terminal 1)      -> the terminal requirement was lost
+    AI303 ($400, non-refundable)  -> the refundable requirement was lost
+    HT9                           -> the goal was lost; B booked a hotel instead
 """
 
 import time

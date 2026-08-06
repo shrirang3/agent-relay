@@ -9,12 +9,6 @@ from langchain_core.tools import tool
 # pin the model in one place; never let ChatGroq default it
 MODEL = "llama-3.3-70b-versatile"
 
-# FLIGHTS = [
-#     {"id": "AI101", "price": 420, "red_eye": False},  # valid — the only correct answer
-#     {"id": "AI202", "price": 380, "red_eye": True},   # cheaper BUT red-eye -> booked when "no red-eye" is lost
-#     {"id": "AI303", "price": 610, "red_eye": False},  # over budget -> booked when the stale $600 survives
-# ]
-
 FLIGHTS = [
     # Constraints are deliberately ARBITRARY. The previous fixture used `red_eye`, and
     # every field scored 0.00 because B avoids red-eyes on its own — the environment's
@@ -88,10 +82,14 @@ def book_hotel(hotel_id: str) -> str:
 
 
 # a messy, multi-turn user request: constraints buried in noise + a mid-way UPDATE
+# The user states BOTH constraints, and changes one mid-conversation so `superseded`
+# has something real to carry. Neither constraint is one a model would guess: it has
+# no opinion about terminal numbers, and no default view on refundability — unlike
+# "no red-eyes", which it enforces on its own and which therefore measured 0.00.
 user_convo = [
-    ("user", "Hey! Planning a quick weekend trip, pretty pumped. Budget's around $600 I reckon."),
+    ("user", "Hey! Planning a quick weekend trip, pretty pumped. I'm coming in by train so Terminal 1 suits me."),
     ("user", "Ugh, weather's been miserable here all week, unrelated but venting."),
-    ("user", "Oh — important: I absolutely cannot do red-eye flights, they wreck me."),
-    ("user", "Actually scratch the $600 — keep it UNDER $500, money's tight this month."),
+    ("user", "Oh — important: plans might shift, so I need a ticket I can get my money back on."),
+    ("user", "Actually scratch Terminal 1 — my ride can only drop me at Terminal 2."),
     ("user", "That's everything, sort me out!"),
 ]
