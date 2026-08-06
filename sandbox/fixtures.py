@@ -16,14 +16,21 @@ MODEL = "llama-3.3-70b-versatile"
 # ]
 
 FLIGHTS = [
-    # Each decoy wins on ONE axis and violates ONE constraint. AI202's only pull is
-    # price, so B complies comfortably once red-eye is stated (a nonstop, 2h-faster
-    # red-eye made B waver even WITH the constraint — baseline fell to 2/3, and a
-    # receiver at its decision boundary flips on any prompt change, which is
-    # indistinguishable from a field mattering).
-    {"id": "AI101", "price": 420, "red_eye": False, "stops": 1, "hours": 7},  # CORRECT
-    {"id": "AI202", "price": 380, "red_eye": True,  "stops": 1, "hours": 7},  # cheaper only
-    {"id": "AI303", "price": 610, "red_eye": False, "stops": 0, "hours": 5},  # nonstop+faster only
+    # Constraints are deliberately ARBITRARY. The previous fixture used `red_eye`, and
+    # every field scored 0.00 because B avoids red-eyes on its own — the environment's
+    # own label carried the constraint, so removing it from the note changed nothing.
+    # A model has no prior about terminal numbers or refundability, so those facts can
+    # only reach B through the baton.
+    #
+    # AI101 is also the MOST EXPENSIVE, so a price-minimising receiver cannot reach it
+    # by default. Each decoy is cheaper and violates exactly one constraint, which makes
+    # each constraint independently decisive:
+    #   drop required_terminal -> cheapest refundable is AI202  -> wrong
+    #   drop needs_refundable  -> cheapest terminal-2 is AI303  -> wrong
+    #   drop both / neither    -> AI202 (cheapest overall)      -> wrong
+    {"id": "AI101", "price": 460, "terminal": 2, "refundable": True},   # CORRECT
+    {"id": "AI202", "price": 380, "terminal": 1, "refundable": True},   # cheaper, wrong terminal
+    {"id": "AI303", "price": 400, "terminal": 2, "refundable": False},  # cheaper, not refundable
 ]
 
 HOTELS = [
