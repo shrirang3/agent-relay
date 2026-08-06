@@ -1,15 +1,12 @@
 """Step D — the context-cliff detector.
 
 For each field in a frozen baton: remove it, replay B K times, compare pass rate to the
-baseline. A large drop means the field is load-bearing. Δ0.0 means dead weight.
+baseline. A large drop means the field is load-bearing. Zero means dead weight.
 
-A is never re-run. The baton is frozen on disk and only B replays, which is the whole
-point of storing the baton (and, later, of Redis role 2).
+A is never re-run. The baton is frozen on disk and only B replays.
 
-Two gates run before any Groq call, because both produce a Δ0.0 that means nothing:
-  - the field is empty        -> removing it removes nothing
-  - the fact leaks elsewhere  -> removing the field doesn't remove the fact
-Gated fields are reported UNTESTABLE, never as zero.
+All trustworthiness logic lives in validity.py as pure functions. This file measures;
+validity.py decides whether a measurement means anything.
 """
 
 import hashlib
@@ -19,21 +16,25 @@ import time
 
 from dotenv import load_dotenv
 
+import validity as V
 from agents import make_executor, make_planner
 from baton import FIELDS, LEAK_PROBES, find_leaks, get_baton, get_transcript
-from fixtures import CORRECT_FLIGHT_ID, make_model, user_convo
+from fixtures import CORRECT_FLIGHT_ID, FLIGHTS, make_model, user_convo
 from measure import TRIGGER, trials
 
 K = 3
 
-# Per-condition results, so a 429 two thirds of the way through costs one condition
-# instead of the whole sweep. Keyed by (baton text, K) — reusing rows measured against
-# a different baton or a different K would silently mix incomparable numbers.
+CONTROL_FIELDS = ("user_mood", "small_talk")
+
 RESULTS_CACHE = pathlib.Path(__file__).parent / ".cliff.json"
 
 
 def sweep_key(baton, k: int) -> str:
-    return hashlib.sha256(f"{k}:{baton.to_prompt()}".encode()).hexdigest()[:12]
+    """Identity of a sweep. Includes the FLIGHT TABLE, not just the baton — rows
+    measured against a different task are not comparable, and the cache would have
+    served them silently when the fixture changed."""
+    blob = f"{k}:{baton.to_prompt()}:{FLIGHTS!r}"
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
 def load_results(key: str) -> dict:
@@ -41,7 +42,7 @@ def load_results(key: str) -> dict:
         d = json.loads(RESULTS_CACHE.read_text())
         if d.get("key") == key:
             return d
-    return {"key": key, "baseline": None, "fields": {}}
+    return {"key": key, "floor": None, "baseline": None, "fields": {}}
 
 
 def save_results(d: dict) -> None:
@@ -49,7 +50,6 @@ def save_results(d: dict) -> None:
 
 
 def keep(r: dict) -> dict:
-    """The subset of a trials() result worth persisting."""
     return {
         "passes": r["passes"],
         "scored": r["scored"],
@@ -57,33 +57,46 @@ def keep(r: dict) -> dict:
         "booked": {str(k): v for k, v in r["booked"].items()},
     }
 
-# Fields planted as noise. They MUST rank Δ0.0 — if they don't, the instrument is broken
-# and the whole ranking is suspect, so the run says so rather than relying on whoever
-# reads the table to remember.
-CONTROL_FIELDS = ("user_mood", "small_talk")
-
 
 def note_messages(baton, drop=frozenset()):
-    """B's input for one ablation. Identical shape to measure.py's structured arm."""
+    """B's input for one condition. Dropping every field yields `{}` — the message
+    shape stays identical, only the content empties out."""
     return [("user", f"Handoff note:\n{baton.to_prompt(drop=drop)}\n\n{TRIGGER}")]
 
 
-def verdict(delta: float) -> str:
-    if delta <= -0.5:
+def verdict(imp: float | None) -> str:
+    """Graded on normalised importance, not raw delta — raw deltas are in units of
+    'trials out of K' and are not comparable across tasks."""
+    if imp is None:
+        return "?"
+    if imp >= 0.99:
         return "CRITICAL"
-    if delta <= -0.2:
+    if imp >= 0.5:
         return "important"
-    if delta < 0:
+    if imp > 0:
         return "minor"
-    if delta > 0:
-        return "helps?"  # removing it improved things — noise, or the field misleads B
+    if imp < 0:
+        return "misleads?"   # worse than no note at all
     return "cut it"
+
+
+def measure(executor, store, name, baton, drop, k):
+    """Run one condition, or replay it from cache. Only clean runs are cached — a
+    persisted 429 poisoned its row on every later run until the file was deleted."""
+    if store["fields"].get(name):
+        print(f"--- {name} (cached) ---")
+        return store["fields"][name]
+    print(f"--- {name} ---")
+    r = keep(trials(executor, note_messages(baton, drop), k))
+    if not r["errors"]:
+        store["fields"][name] = r
+        save_results(store)
+    print()
+    return r
 
 
 if __name__ == "__main__":
     load_dotenv()
-    # More retries than the default: a sweep is dozens of calls against a free tier, and
-    # one 429 must not turn into a missing row.
     model = make_model(max_retries=8)
     planner = make_planner(model)
     executor = make_executor(model)
@@ -91,93 +104,70 @@ if __name__ == "__main__":
     transcript = get_transcript(planner, user_convo)
     baton, attempts, leaks = get_baton(model, transcript, LEAK_PROBES)
     print(f"frozen baton (attempts={attempts}):\n{baton.to_prompt()}\n")
-    if leaks:
-        print(f"!! baton has leaks, those fields will be UNTESTABLE: {leaks}\n")
 
     store = load_results(sweep_key(baton, K))
     t0 = time.perf_counter()
 
-    if store["baseline"] is None:
-        print(f"--- baseline (complete baton), K={K} ---")
-        base = keep(trials(executor, note_messages(baton), K))
-        # Every delta is measured against this, so its errors would propagate into all
-        # seven rows. Refuse to build a report on a damaged baseline.
-        if base["errors"]:
-            raise SystemExit(f"baseline had {base['errors']}/{K} errored calls — fix rate limits first")
-        # A 0/K baseline has no success to lose, so every delta can only come out >= 0 —
-        # the sweep is mathematically incapable of finding a cliff. It produced a table
-        # anyway once, with "removing the budget helps, +1.00". Refuse instead.
-        if base["passes"] == 0:
-            raise SystemExit(
-                f"baseline is 0/{K} — B fails with the COMPLETE baton, so no field can show a "
-                f"drop. Fix the receiver or the task first. B booked: {base['booked']}"
-            )
-        if base["passes"] < K:
-            raise SystemExit(
-                f"baseline is {base['passes']}/{K} — B is at its decision boundary, so ablations "
-                f"measure prompt perturbation rather than information. Make the task less "
-                f"tempting before sweeping. B booked: {base['booked']}"
-            )
-        store["baseline"] = base
+    # --- G0: floor. Empty baton must FAIL, or nothing downstream can register. ---
+    if store["floor"] is None:
+        print(f"--- floor (EMPTY baton), K={K} ---")
+        store["floor"] = keep(trials(executor, note_messages(baton, frozenset(FIELDS)), K))
         save_results(store)
         print()
-    else:
-        print(f"baseline reused from cache: {store['baseline']['passes']}/{K}\n")
+    floor = store["floor"]
+    if floor["errors"]:
+        raise SystemExit(f"floor had {floor['errors']}/{K} errored calls — fix rate limits first")
+    v = V.check_floor(floor["passes"], K)
+    if not v.ok:
+        raise SystemExit(f"{v.code}: {v.reason}\n  B booked without a note: {floor['booked']}")
+    print(f"floor {floor['passes']}/{K} — the note carries real signal\n")
+
+    # --- G1: baseline. Full baton must SUCCEED every time. ---
+    if store["baseline"] is None:
+        print(f"--- baseline (complete baton), K={K} ---")
+        store["baseline"] = keep(trials(executor, note_messages(baton), K))
+        save_results(store)
+        print()
     base = store["baseline"]
+    v = V.check_baseline(base["passes"], base["errors"], K)
+    if not v.ok:
+        raise SystemExit(f"{v.code}: {v.reason}\n  B booked: {base['booked']}")
 
-    rows = []
+    # --- per-field sweep ---
+    rows, deltas = [], {}
     for f in FIELDS:
-        value = getattr(baton, f)
-
-        # gate 1 — nothing to remove. A bool is always testable; its probes do the work.
-        if not isinstance(value, bool) and not value:
-            rows.append((f, None, "UNTESTABLE", "field is empty"))
+        # G2/G3 — free, so they run before any API call
+        v = V.check_field(getattr(baton, f), find_leaks(baton, frozenset({f}), LEAK_PROBES))
+        if not v.ok:
+            rows.append((f, None, None, v.code, v.reason))
+            deltas[f] = None
             continue
 
-        # gate 2 — the fact survives the removal, so a Δ would be meaningless
-        lk = find_leaks(baton, frozenset({f}), LEAK_PROBES)
-        if lk:
-            rows.append((f, None, "UNTESTABLE", lk[0]))
-            continue
+        r = measure(executor, store, f, baton, frozenset({f}), K)
 
-        if f in store["fields"]:
-            r = store["fields"][f]
-            print(f"--- drop {f} (cached) ---")
-        else:
-            print(f"--- drop {f} ---")
-            r = keep(trials(executor, note_messages(baton, frozenset({f})), K))
-            # Only cache clean conditions. Persisting an errored one meant a single 429
-            # poisoned that row permanently — it replayed as cached INVALID on every
-            # later run until the cache file was deleted by hand.
-            if not r["errors"]:
-                store["fields"][f] = r
-                save_results(store)  # persist per condition, not at the end
-            print()
-
-        # A failed HTTP call is MISSING DATA, not a failed pickup. Scoring a 429 as a
-        # failure once produced "small_talk is CRITICAL" — the exact false positive the
-        # control fields exist to catch, manufactured by the scorer itself.
-        if r["errors"]:
-            rows.append((f, None, "INVALID", f"{r['errors']}/{K} calls errored — no data"))
+        # G4 — missing data is never zero
+        v = V.check_condition(r["errors"], K)
+        if not v.ok:
+            rows.append((f, None, None, v.code, v.reason))
+            deltas[f] = None
             continue
 
         delta = (r["passes"] - base["passes"]) / K
+        imp = V.importance(r["passes"], base["passes"], floor["passes"])
+        deltas[f] = delta
         fails = {fl: n for fl, n in r["booked"].items() if fl != CORRECT_FLIGHT_ID}
-        rows.append((f, delta, verdict(delta), fails or "-"))
+        rows.append((f, delta, imp, verdict(imp), fails or "-"))
 
-    print(f"=== cliff report ===  baseline {base['passes']}/{K}  ({time.perf_counter() - t0:.0f}s)")
-    print(f"{'field':<14} {'Δ':>6}  {'verdict':<11} what B booked instead")
-    for f, delta, v, detail in rows:
+    # --- report ---
+    print(f"=== cliff report ===  floor {floor['passes']}/{K}  baseline {base['passes']}/{K}"
+          f"  ({time.perf_counter() - t0:.0f}s)")
+    print(f"{'field':<18} {'Δ':>6} {'importance':>11}  {'verdict':<11} what B booked instead")
+    for f, delta, imp, v, detail in rows:
         d = f"{delta:+.2f}" if delta is not None else "  -  "
-        print(f"{f:<14} {d:>6}  {v:<11} {detail}")
+        i = f"{imp:.2f}" if imp is not None else "  -  "
+        print(f"{f:<18} {d:>6} {i:>11}  {v:<11} {detail}")
 
-    # instrument self-check
-    bad = [
-        (f, delta) for f, delta, v, _ in rows
-        if f in CONTROL_FIELDS and delta is not None and delta != 0.0
-    ]
+    # --- G5: controls ---
     print()
-    if bad:
-        print(f"!! CONTROL FIELDS MOVED: {bad} — instrument suspect, do not trust this ranking")
-    else:
-        print("control fields flat at Δ0.0 — instrument behaving")
+    v = V.check_controls(deltas, CONTROL_FIELDS)
+    print(v.reason if not v.ok else "control fields flat at 0.00 — instrument behaving")
